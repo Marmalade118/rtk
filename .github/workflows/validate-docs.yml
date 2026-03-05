@@ -68,8 +68,9 @@ jobs:
           fi
 
           # Verify all Python/Go commands are covered in the registry
+          # Since PR #241, constants live in src/discover/rules.rs (extracted from registry.rs)
           for cmd in ruff pytest pip golangci; do
-            if ! grep -q "\"$cmd\"" src/discover/registry.rs; then
+            if ! grep -qr "\"$cmd\"" src/discover/; then
               echo "❌ Registry missing rewrite_prefixes for: $cmd"
               exit 1
             fi
