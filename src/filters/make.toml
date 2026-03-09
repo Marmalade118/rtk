@@ -7,6 +7,7 @@ strip_lines_matching = [
   "^Nothing to be done",
 ]
 max_lines = 50
+on_empty = "make: ok"
 
 [[tests.make]]
 name = "strips entering/leaving lines"
@@ -37,4 +38,4 @@ input = """
 make[1]: Entering directory '/home/user'
 make[1]: Leaving directory '/home/user'
 """
-expected = ""
+expected = "make: ok"

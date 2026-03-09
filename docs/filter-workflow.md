@@ -87,7 +87,7 @@ flowchart LR
     P1{"1. .rtk/filters.toml\n(project-local)"}
     P1 -->|"✅ match"| WIN["apply filter"]
     P1 -->|"no match"| P2
-    P2{"2. ~/.config/rtk/filters.toml\n(user-global)"}
+    P2{"2. ~/.config/rtk/filters.toml\n(user-global)\n(macOS alt: ~/Library/Application Support/rtk/filters.toml)"}
     P2 -->|"✅ match"| WIN
     P2 -->|"no match"| P3
     P3{"3. BUILTIN_TOML\n(binary)"}
