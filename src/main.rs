@@ -2346,5 +2346,55 @@ mod tests {
         let result: Vec<String> = shell_split("");
         assert!(result.is_empty());
     }
+
+    #[test]
+    fn test_rewrite_clap_multi_args() {
+        // This is the bug KuSh reported: `rtk rewrite ls -al` failed because
+        // Clap rejected `-al` as an unknown flag. With trailing_var_arg + allow_hyphen_values,
+        // multiple args are accepted and joined into a single command string.
+        let cases = vec![
+            vec!["rtk", "rewrite", "ls", "-al"],
+            vec!["rtk", "rewrite", "git", "status"],
+            vec!["rtk", "rewrite", "npm", "exec"],
+            vec!["rtk", "rewrite", "cargo", "test"],
+            vec!["rtk", "rewrite", "du", "-sh", "."],
+            vec!["rtk", "rewrite", "head", "-50", "file.txt"],
+        ];
+        for args in &cases {
+            let result = Cli::try_parse_from(args.iter());
+            assert!(
+                result.is_ok(),
+                "rtk rewrite {:?} should parse (was failing before trailing_var_arg fix)",
+                &args[2..]
+            );
+            if let Ok(cli) = result {
+                match cli.command {
+                    Commands::Rewrite { ref args } => {
+                        assert!(
+                            args.len() >= 2,
+                            "rewrite args should capture all tokens"
+                        );
+                    }
+                    _ => panic!("expected Rewrite command"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_rewrite_clap_quoted_single_arg() {
+        // Quoted form: `rtk rewrite "git status"` — single arg containing spaces
+        let result = Cli::try_parse_from(["rtk", "rewrite", "git status"]);
+        assert!(result.is_ok());
+        if let Ok(cli) = result {
+            match cli.command {
+                Commands::Rewrite { ref args } => {
+                    assert_eq!(args.len(), 1);
+                    assert_eq!(args[0], "git status");
+                }
+                _ => panic!("expected Rewrite command"),
+            }
+        }
+    }
 }
 
