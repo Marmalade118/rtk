@@ -1009,10 +1009,23 @@ fn run_branch(args: &[String], verbose: u8, global_args: &[String]) -> Result<()
         eprintln!("git branch");
     }
 
-    // Detect write operations: delete, rename, copy
-    let has_action_flag = args
-        .iter()
-        .any(|a| a == "-d" || a == "-D" || a == "-m" || a == "-M" || a == "-c" || a == "-C");
+    // Detect write operations: delete, rename, copy, upstream tracking
+    let has_action_flag = args.iter().any(|a| {
+        a == "-d"
+            || a == "-D"
+            || a == "-m"
+            || a == "-M"
+            || a == "-c"
+            || a == "-C"
+            || a == "--set-upstream-to"
+            || a.starts_with("--set-upstream-to=")
+            || a == "-u"
+            || a == "--unset-upstream"
+            || a == "--edit-description"
+    });
+
+    // Detect flags that produce specific output (not a branch list)
+    let has_show_flag = args.iter().any(|a| a == "--show-current");
 
     // Detect list-mode flags
     let has_list_flag = args.iter().any(|a| {
@@ -1025,10 +1038,48 @@ fn run_branch(args: &[String], verbose: u8, global_args: &[String]) -> Result<()
             || a == "--no-merged"
             || a == "--contains"
             || a == "--no-contains"
+            || a == "--format"
+            || a.starts_with("--format=")
+            || a == "--sort"
+            || a.starts_with("--sort=")
+            || a == "--points-at"
+            || a.starts_with("--points-at=")
     });
 
     // Detect positional arguments (not flags) — indicates branch creation
     let has_positional_arg = args.iter().any(|a| !a.starts_with('-'));
+
+    // --show-current: passthrough with raw stdout (not "ok ✓")
+    if has_show_flag {
+        let mut cmd = git_cmd(global_args);
+        cmd.arg("branch");
+        for arg in args {
+            cmd.arg(arg);
+        }
+        let output = cmd.output().context("Failed to run git branch")?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let combined = format!("{}{}", stdout, stderr);
+
+        let trimmed = stdout.trim();
+        timer.track(
+            &format!("git branch {}", args.join(" ")),
+            &format!("rtk git branch {}", args.join(" ")),
+            &combined,
+            trimmed,
+        );
+
+        if output.status.success() {
+            println!("{}", trimmed);
+        } else {
+            eprintln!("FAILED: git branch {}", args.join(" "));
+            if !stderr.trim().is_empty() {
+                eprintln!("{}", stderr);
+            }
+            std::process::exit(output.status.code().unwrap_or(1));
+        }
+        return Ok(());
+    }
 
     // Write operation: action flags, or positional args without list flags (= branch creation)
     if has_action_flag || (has_positional_arg && !has_list_flag) {
@@ -1285,7 +1336,42 @@ fn run_stash(
                 std::process::exit(output.status.code().unwrap_or(1));
             }
         }
-        _ => {
+        Some(sub) => {
+            // Unrecognized subcommand: passthrough to git stash <sub> [args]
+            let mut cmd = git_cmd(global_args);
+            cmd.args(["stash", sub]);
+            for arg in args {
+                cmd.arg(arg);
+            }
+            let output = cmd.output().context("Failed to run git stash")?;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let combined = format!("{}{}", stdout, stderr);
+
+            let msg = if output.status.success() {
+                let msg = format!("ok stash {}", sub);
+                println!("{}", msg);
+                msg
+            } else {
+                eprintln!("FAILED: git stash {}", sub);
+                if !stderr.trim().is_empty() {
+                    eprintln!("{}", stderr);
+                }
+                combined.clone()
+            };
+
+            timer.track(
+                &format!("git stash {}", sub),
+                &format!("rtk git stash {}", sub),
+                &combined,
+                &msg,
+            );
+
+            if !output.status.success() {
+                std::process::exit(output.status.code().unwrap_or(1));
+            }
+        }
+        None => {
             // Default: git stash (push)
             let mut cmd = git_cmd(global_args);
             cmd.arg("stash");
