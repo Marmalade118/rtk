@@ -548,7 +548,7 @@ fn format_status_output(porcelain: &str) -> String {
     if let Some(branch_line) = lines.first() {
         if branch_line.starts_with("##") {
             let branch = branch_line.trim_start_matches("## ");
-            output.push_str(&format!("📌 {}\n", branch));
+            output.push_str(&format!("branch: {}\n", branch));
         }
     }
 
@@ -598,37 +598,51 @@ fn format_status_output(porcelain: &str) -> String {
     let max_untracked = limits.status_max_untracked;
 
     if staged > 0 {
-        output.push_str(&format!("✅ Staged: {} files\n", staged));
+        output.push_str(&format!("staged: {} files\n", staged));
         for f in staged_files.iter().take(max_files) {
             output.push_str(&format!("   {}\n", f));
         }
         if staged_files.len() > max_files {
-            output.push_str(&format!("   ... +{} more\n", staged_files.len() - max_files));
+            output.push_str(&format!(
+                "   ... +{} more\n",
+                staged_files.len() - max_files
+            ));
         }
     }
 
     if modified > 0 {
-        output.push_str(&format!("📝 Modified: {} files\n", modified));
+        output.push_str(&format!("modified: {} files\n", modified));
         for f in modified_files.iter().take(max_files) {
             output.push_str(&format!("   {}\n", f));
         }
         if modified_files.len() > max_files {
-            output.push_str(&format!("   ... +{} more\n", modified_files.len() - max_files));
+            output.push_str(&format!(
+                "   ... +{} more\n",
+                modified_files.len() - max_files
+            ));
         }
     }
 
     if untracked > 0 {
-        output.push_str(&format!("❓ Untracked: {} files\n", untracked));
+        output.push_str(&format!("untracked: {} files\n", untracked));
         for f in untracked_files.iter().take(max_untracked) {
             output.push_str(&format!("   {}\n", f));
         }
         if untracked_files.len() > max_untracked {
-            output.push_str(&format!("   ... +{} more\n", untracked_files.len() - max_untracked));
+            output.push_str(&format!(
+                "   ... +{} more\n",
+                untracked_files.len() - max_untracked
+            ));
         }
     }
 
     if conflicts > 0 {
-        output.push_str(&format!("⚠️  Conflicts: {} files\n", conflicts));
+        output.push_str(&format!("conflicts: {} files\n", conflicts));
+    }
+
+    // When working tree is clean (only branch line, no changes)
+    if staged == 0 && modified == 0 && untracked == 0 && conflicts == 0 {
+        output.push_str("clean — nothing to commit\n");
     }
 
     output.trim_end().to_string()
@@ -1654,8 +1668,8 @@ mod tests {
     fn test_format_status_output_modified_files() {
         let porcelain = "## main...origin/main\n M src/main.rs\n M src/lib.rs\n";
         let result = format_status_output(porcelain);
-        assert!(result.contains("📌 main...origin/main"));
-        assert!(result.contains("📝 Modified: 2 files"));
+        assert!(result.contains("branch: main...origin/main"));
+        assert!(result.contains("modified: 2 files"));
         assert!(result.contains("src/main.rs"));
         assert!(result.contains("src/lib.rs"));
         assert!(!result.contains("Staged"));
@@ -1666,8 +1680,8 @@ mod tests {
     fn test_format_status_output_untracked_files() {
         let porcelain = "## feature/new\n?? temp.txt\n?? debug.log\n?? test.sh\n";
         let result = format_status_output(porcelain);
-        assert!(result.contains("📌 feature/new"));
-        assert!(result.contains("❓ Untracked: 3 files"));
+        assert!(result.contains("branch: feature/new"));
+        assert!(result.contains("untracked: 3 files"));
         assert!(result.contains("temp.txt"));
         assert!(result.contains("debug.log"));
         assert!(result.contains("test.sh"));
@@ -1683,13 +1697,13 @@ A  added.rs
 ?? untracked.txt
 "#;
         let result = format_status_output(porcelain);
-        assert!(result.contains("📌 main"));
-        assert!(result.contains("✅ Staged: 2 files"));
+        assert!(result.contains("branch: main"));
+        assert!(result.contains("staged: 2 files"));
         assert!(result.contains("staged.rs"));
         assert!(result.contains("added.rs"));
-        assert!(result.contains("📝 Modified: 1 files"));
+        assert!(result.contains("modified: 1 files"));
         assert!(result.contains("modified.rs"));
-        assert!(result.contains("❓ Untracked: 1 files"));
+        assert!(result.contains("untracked: 1 files"));
         assert!(result.contains("untracked.txt"));
     }
 
@@ -1701,7 +1715,7 @@ A  added.rs
             porcelain.push_str(&format!("M  file{}.rs\n", i));
         }
         let result = format_status_output(&porcelain);
-        assert!(result.contains("✅ Staged: 20 files"));
+        assert!(result.contains("staged: 20 files"));
         assert!(result.contains("file1.rs"));
         assert!(result.contains("file15.rs"));
         assert!(result.contains("... +5 more"));
@@ -1717,7 +1731,7 @@ A  added.rs
             porcelain.push_str(&format!(" M file{}.rs\n", i));
         }
         let result = format_status_output(&porcelain);
-        assert!(result.contains("📝 Modified: 20 files"));
+        assert!(result.contains("modified: 20 files"));
         assert!(result.contains("file1.rs"));
         assert!(result.contains("file15.rs"));
         assert!(result.contains("... +5 more"));
@@ -1732,7 +1746,7 @@ A  added.rs
             porcelain.push_str(&format!("?? file{}.rs\n", i));
         }
         let result = format_status_output(&porcelain);
-        assert!(result.contains("❓ Untracked: 15 files"));
+        assert!(result.contains("untracked: 15 files"));
         assert!(result.contains("file1.rs"));
         assert!(result.contains("file10.rs"));
         assert!(result.contains("... +5 more"));
@@ -1946,7 +1960,7 @@ no changes added to commit (use "git add" and/or "git commit -a")
         let porcelain = "## main\n M สวัสดี.txt\n?? ทดสอบ.rs\n";
         let result = format_status_output(porcelain);
         // Should not panic
-        assert!(result.contains("📌 main"));
+        assert!(result.contains("branch: main"));
         assert!(result.contains("สวัสดี.txt"));
         assert!(result.contains("ทดสอบ.rs"));
     }
@@ -1955,7 +1969,7 @@ no changes added to commit (use "git add" and/or "git commit -a")
     fn test_format_status_output_emoji_filename() {
         let porcelain = "## main\nA  🎉-party.txt\n M 日本語ファイル.rs\n";
         let result = format_status_output(porcelain);
-        assert!(result.contains("📌 main"));
+        assert!(result.contains("branch: main"));
     }
 
     /// Regression test: --oneline and other user format flags must preserve all commits.
