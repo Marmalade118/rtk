@@ -181,11 +181,29 @@ impl TomlFilterRegistry {
     fn load() -> Self {
         let mut filters = Vec::new();
 
-        // Priority 1: project-local .rtk/filters.toml
-        if let Ok(content) = std::fs::read_to_string(".rtk/filters.toml") {
-            match Self::parse_and_compile(&content, "project") {
-                Ok(f) => filters.extend(f),
-                Err(e) => eprintln!("[rtk] warning: .rtk/filters.toml: {}", e),
+        // Priority 1: project-local .rtk/filters.toml (trust-gated)
+        let project_filter_path = std::path::Path::new(".rtk/filters.toml");
+        if project_filter_path.exists() {
+            let trust_status = crate::trust::check_trust(project_filter_path)
+                .unwrap_or(crate::trust::TrustStatus::Untrusted);
+
+            match trust_status {
+                crate::trust::TrustStatus::Trusted | crate::trust::TrustStatus::EnvOverride => {
+                    if let Ok(content) = std::fs::read_to_string(project_filter_path) {
+                        match Self::parse_and_compile(&content, "project") {
+                            Ok(f) => filters.extend(f),
+                            Err(e) => eprintln!("[rtk] warning: .rtk/filters.toml: {}", e),
+                        }
+                    }
+                }
+                crate::trust::TrustStatus::Untrusted => {
+                    eprintln!("[rtk] WARNING: untrusted project filters (.rtk/filters.toml)");
+                    eprintln!("[rtk] Filters NOT applied. Run `rtk trust` to review and enable.");
+                }
+                crate::trust::TrustStatus::ContentChanged { .. } => {
+                    eprintln!("[rtk] WARNING: .rtk/filters.toml changed since trusted.");
+                    eprintln!("[rtk] Filters NOT applied. Run `rtk trust` to re-review.");
+                }
             }
         }
 
