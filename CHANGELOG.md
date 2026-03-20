@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Bug Fixes
+
+* **dotnet:** stop injecting `-nologo`, `--logger trx`, and `--results-directory` into `dotnet test` — breaks Microsoft.Testing.Platform (MTP) projects ([#572](https://github.com/rtk-ai/rtk/issues/572))
+
 ### Features
 
 * **ruby:** add RSpec test runner filter with JSON parsing and text fallback (60%+ reduction)
