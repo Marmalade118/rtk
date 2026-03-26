@@ -1788,54 +1788,24 @@ fn show_claude_config() -> Result<()> {
 
     println!("rtk Configuration:\n");
 
-    // Check hook
-    if hook_path.exists() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let metadata = fs::metadata(&hook_path)?;
-            let perms = metadata.permissions();
-            let is_executable = perms.mode() & 0o111 != 0;
-
-            let hook_content = fs::read_to_string(&hook_path)?;
-            let has_guards =
-                hook_content.contains("command -v rtk") && hook_content.contains("command -v jq");
-            let is_thin_delegator = hook_content.contains("rtk rewrite");
-            let hook_version = crate::hook_check::parse_hook_version(&hook_content);
-
-            if !is_executable {
-                println!(
-                    "[warn] Hook: {} (NOT executable - run: chmod +x)",
-                    hook_path.display()
-                );
-            } else if !is_thin_delegator {
-                println!(
-                    "[warn] Hook: {} (outdated — inline logic, not thin delegator)",
-                    hook_path.display()
-                );
-                println!(
-                    "   → Run `rtk init --global` to upgrade to the single source of truth hook"
-                );
-            } else if is_executable && has_guards {
-                println!(
-                    "[ok] Hook: {} (thin delegator, version {})",
-                    hook_path.display(),
-                    hook_version
-                );
-            } else {
-                println!(
-                    "[warn] Hook: {} (no guards - outdated)",
-                    hook_path.display()
-                );
-            }
+    // Check hook presence in settings.json
+    match integrity::verify_hook() {
+        Ok(integrity::IntegrityStatus::Verified) => {
+            println!("[ok] Hook: rtk hook claude registered in settings.json");
         }
-
-        #[cfg(not(unix))]
-        {
-            println!("[ok] Hook: {} (exists)", hook_path.display());
+        Ok(integrity::IntegrityStatus::NoBaseline) => {
+            println!("[warn] Hook: legacy rtk-rewrite.sh detected (run: rtk init -g to migrate)");
         }
-    } else {
-        println!("[--] Hook: not found");
+        Ok(integrity::IntegrityStatus::NotInstalled) => {
+            println!("[--] Hook: not registered in settings.json (run: rtk init -g)");
+        }
+        Ok(integrity::IntegrityStatus::Tampered { .. })
+        | Ok(integrity::IntegrityStatus::OrphanedHash) => {
+            // Cannot occur from settings.json check
+        }
+        Err(_) => {
+            println!("[warn] Hook: settings.json check failed");
+        }
     }
 
     // Check RTK.md
@@ -1843,26 +1813,6 @@ fn show_claude_config() -> Result<()> {
         println!("[ok] RTK.md: {} (slim mode)", rtk_md_path.display());
     } else {
         println!("[--] RTK.md: not found");
-    }
-
-    // Check hook integrity
-    match integrity::verify_hook_at(&hook_path) {
-        Ok(integrity::IntegrityStatus::Verified) => {
-            println!("[ok] Integrity: hook hash verified");
-        }
-        Ok(integrity::IntegrityStatus::Tampered { .. }) => {
-            println!("[FAIL] Integrity: hook modified outside rtk init (run: rtk verify)");
-        }
-        Ok(integrity::IntegrityStatus::NoBaseline) => {
-            println!("[warn] Integrity: no baseline hash (run: rtk init -g to establish)");
-        }
-        Ok(integrity::IntegrityStatus::NotInstalled)
-        | Ok(integrity::IntegrityStatus::OrphanedHash) => {
-            // Don't show integrity line if hook isn't installed
-        }
-        Err(_) => {
-            println!("[warn] Integrity: check failed");
-        }
     }
 
     // Check global CLAUDE.md

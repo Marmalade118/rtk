@@ -1,18 +1,17 @@
-//! Hook integrity verification via SHA-256.
+//! Hook integrity verification.
 //!
-//! RTK installs a PreToolUse hook (`rtk-rewrite.sh`) that auto-approves
-//! rewritten commands with `permissionDecision: "allow"`. Because this
-//! hook bypasses Claude Code's permission prompts, any unauthorized
-//! modification represents a command injection vector.
+//! RTK installs a Claude Code PreToolUse hook (`rtk hook claude`) that
+//! rewrites Bash tool commands to token-efficient `rtk` equivalents.
+//! This module verifies the hook is registered in `~/.claude/settings.json`
+//! so `rtk verify` and the runtime check can detect missing/legacy installs.
 //!
-//! This module provides:
-//! - SHA-256 hash computation and storage at install time
-//! - Runtime verification before command execution
-//! - Manual verification via `rtk verify`
+//! SHA-256 helpers are kept for TOML filter integrity (used by trust.rs)
+//! and for backward-compatible legacy uninstall of `rtk-rewrite.sh`.
 //!
 //! Reference: SA-2025-RTK-001 (Finding F-01)
 
 use anyhow::{Context, Result};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,18 +19,19 @@ use std::path::{Path, PathBuf};
 /// Filename for the stored hash (dotfile alongside hook)
 const HASH_FILENAME: &str = ".rtk-hook.sha256";
 
-/// Result of hook integrity verification
+/// Result of hook integrity/presence verification
 #[derive(Debug, PartialEq)]
 pub enum IntegrityStatus {
-    /// Hash matches — hook is unmodified since last install/update
+    /// Native hook registered — `rtk hook claude` found in settings.json
     Verified,
-    /// Hash mismatch — hook has been modified outside of `rtk init`
-    Tampered { expected: String, actual: String },
-    /// Hook exists but no stored hash (installed before integrity checks)
+    /// Legacy hook detected — `rtk-rewrite.sh` still in settings.json (needs migration)
     NoBaseline,
-    /// Neither hook nor hash file exist (RTK not installed)
+    /// RTK hook not registered in settings.json
     NotInstalled,
-    /// Hash file exists but hook was deleted
+    /// Legacy file-based states — kept for backward-compat match arms and tests
+    #[allow(dead_code)]
+    Tampered { expected: String, actual: String },
+    #[allow(dead_code)]
     OrphanedHash,
 }
 
@@ -116,16 +116,63 @@ pub fn remove_hash(hook_path: &Path) -> Result<bool> {
     Ok(true)
 }
 
-/// Verify hook integrity against stored hash.
+/// Verify hook presence by checking `~/.claude/settings.json`.
 ///
 /// Returns `IntegrityStatus` indicating the result. Callers decide
 /// how to handle each status (warn, block, ignore).
 pub fn verify_hook() -> Result<IntegrityStatus> {
-    let hook_path = resolve_hook_path()?;
-    verify_hook_at(&hook_path)
+    let settings_path = resolve_settings_path()?;
+    verify_hook_in_settings(&settings_path)
 }
 
-/// Verify hook integrity for a specific hook path (testable)
+/// Verify hook presence for a specific settings.json path (testable).
+pub fn verify_hook_in_settings(settings_path: &Path) -> Result<IntegrityStatus> {
+    if !settings_path.exists() {
+        return Ok(IntegrityStatus::NotInstalled);
+    }
+
+    let content = fs::read_to_string(settings_path)
+        .with_context(|| format!("Failed to read {}", settings_path.display()))?;
+
+    if content.trim().is_empty() {
+        return Ok(IntegrityStatus::NotInstalled);
+    }
+
+    let root: Value = serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse {} as JSON", settings_path.display()))?;
+
+    if settings_has_hook(&root, "rtk hook claude") {
+        Ok(IntegrityStatus::Verified)
+    } else if settings_has_hook(&root, "rtk-rewrite.sh") {
+        // Legacy shell-script hook — still works but should migrate
+        Ok(IntegrityStatus::NoBaseline)
+    } else {
+        Ok(IntegrityStatus::NotInstalled)
+    }
+}
+
+/// Returns true if the PreToolUse hooks array in a settings.json root
+/// contains a command matching `needle`.
+fn settings_has_hook(root: &Value, needle: &str) -> bool {
+    let arr = match root
+        .get("hooks")
+        .and_then(|h| h.get("PreToolUse"))
+        .and_then(|p| p.as_array())
+    {
+        Some(arr) => arr,
+        None => return false,
+    };
+
+    arr.iter()
+        .filter_map(|entry| entry.get("hooks")?.as_array())
+        .flatten()
+        .filter_map(|hook| hook.get("command")?.as_str())
+        .any(|cmd| cmd.contains(needle))
+}
+
+/// Verify hook integrity for a specific hook file path (legacy SHA-256 check).
+/// Only used in tests. New installs use `verify_hook_in_settings` instead.
+#[cfg(test)]
 pub fn verify_hook_at(hook_path: &Path) -> Result<IntegrityStatus> {
     let hash_file = hash_path(hook_path);
 
@@ -153,6 +200,7 @@ pub fn verify_hook_at(hook_path: &Path) -> Result<IntegrityStatus> {
 ///
 /// Expects exact `sha256sum -c` format: `<64 hex>  <filename>\n`
 /// Rejects malformed files rather than silently accepting them.
+#[cfg(test)]
 fn read_stored_hash(path: &Path) -> Result<String> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("Failed to read hash file: {}", path.display()))?;
@@ -179,104 +227,55 @@ fn read_stored_hash(path: &Path) -> Result<String> {
     Ok(hash.to_string())
 }
 
-/// Resolve the default hook path (~/.claude/hooks/rtk-rewrite.sh)
-pub fn resolve_hook_path() -> Result<PathBuf> {
+/// Resolve the default settings.json path (~/.claude/settings.json)
+pub fn resolve_settings_path() -> Result<PathBuf> {
     dirs::home_dir()
-        .map(|h| h.join(".claude").join("hooks").join("rtk-rewrite.sh"))
+        .map(|h| h.join(".claude").join("settings.json"))
         .context("Cannot determine home directory. Is $HOME set?")
 }
 
 /// Run integrity check and print results (for `rtk verify` subcommand)
 pub fn run_verify(verbose: u8) -> Result<()> {
-    let hook_path = resolve_hook_path()?;
-    let hash_file = hash_path(&hook_path);
+    let settings_path = resolve_settings_path()?;
 
     if verbose > 0 {
-        eprintln!("Hook:  {}", hook_path.display());
-        eprintln!("Hash:  {}", hash_file.display());
+        eprintln!("Settings: {}", settings_path.display());
     }
 
-    match verify_hook_at(&hook_path)? {
+    match verify_hook_in_settings(&settings_path)? {
         IntegrityStatus::Verified => {
-            let hash = compute_hash(&hook_path)?;
-            println!("PASS  hook integrity verified");
-            println!("      sha256:{}", hash);
-            println!("      {}", hook_path.display());
-        }
-        IntegrityStatus::Tampered { expected, actual } => {
-            eprintln!("FAIL  hook integrity check FAILED");
-            eprintln!();
-            eprintln!("  Expected: {}", expected);
-            eprintln!("  Actual:   {}", actual);
-            eprintln!();
-            eprintln!("  The hook file has been modified outside of `rtk init`.");
-            eprintln!("  This could indicate tampering or a manual edit.");
-            eprintln!();
-            eprintln!("  To restore: rtk init -g --auto-patch");
-            eprintln!("  To inspect: cat {}", hook_path.display());
-            std::process::exit(1);
+            println!("PASS  rtk hook claude registered in settings.json");
+            println!("      {}", settings_path.display());
         }
         IntegrityStatus::NoBaseline => {
-            println!("WARN  no baseline hash found");
-            println!("      Hook exists but was installed before integrity checks.");
-            println!("      Run `rtk init -g` to establish baseline.");
+            println!("WARN  legacy rtk-rewrite.sh hook detected");
+            println!("      Run `rtk init -g` to migrate to the native hook (no jq required).");
         }
         IntegrityStatus::NotInstalled => {
-            println!("SKIP  RTK hook not installed");
+            println!("SKIP  RTK hook not found in settings.json");
             println!("      Run `rtk init -g` to install.");
         }
-        IntegrityStatus::OrphanedHash => {
-            eprintln!("WARN  hash file exists but hook is missing");
-            eprintln!("      Run `rtk init -g` to reinstall.");
+        // Legacy file-based statuses — cannot occur from settings.json check
+        IntegrityStatus::Tampered { .. } | IntegrityStatus::OrphanedHash => {
+            println!("SKIP  RTK hook not found in settings.json");
+            println!("      Run `rtk init -g` to install.");
         }
     }
 
     Ok(())
 }
 
-/// Runtime integrity gate. Called at startup for operational commands.
+/// Runtime presence check. Called at startup for operational commands.
 ///
 /// Behavior:
 /// - `Verified` / `NotInstalled` / `NoBaseline`: silent, continue
-/// - `Tampered`: print warning to stderr, exit 1
-/// - `OrphanedHash`: warn to stderr, continue
-///
-/// No env-var bypass is provided — if the hook is legitimately modified,
-/// re-run `rtk init -g --auto-patch` to re-establish the baseline.
+///   (not-installed is silent — hook is optional, just reduces token usage)
+/// - `Tampered` / `OrphanedHash`: cannot occur from settings.json check, treat as pass-through
 pub fn runtime_check() -> Result<()> {
-    match verify_hook()? {
-        IntegrityStatus::Verified | IntegrityStatus::NotInstalled => {
-            // All good, proceed
-        }
-        IntegrityStatus::NoBaseline => {
-            // Installed before integrity checks — don't block
-            // Silently skip to avoid noise for users who haven't re-run init
-        }
-        IntegrityStatus::Tampered { expected, actual } => {
-            eprintln!("rtk: hook integrity check FAILED");
-            eprintln!(
-                "  Expected hash: {}...",
-                expected.get(..16).unwrap_or(&expected)
-            );
-            eprintln!(
-                "  Actual hash:   {}...",
-                actual.get(..16).unwrap_or(&actual)
-            );
-            eprintln!();
-            eprintln!("  The hook at ~/.claude/hooks/rtk-rewrite.sh has been modified.");
-            eprintln!("  This may indicate tampering. RTK will not execute.");
-            eprintln!();
-            eprintln!("  To restore:  rtk init -g --auto-patch");
-            eprintln!("  To inspect:  rtk verify");
-            std::process::exit(1);
-        }
-        IntegrityStatus::OrphanedHash => {
-            eprintln!("rtk: warning: hash file exists but hook is missing");
-            eprintln!("  Run `rtk init -g` to reinstall.");
-            // Don't block — hook is gone, nothing to exploit
-        }
-    }
-
+    // All statuses from the settings.json check are non-blocking — we never
+    // want to prevent the user from running RTK commands just because the
+    // hook isn't registered.
+    let _ = verify_hook()?;
     Ok(())
 }
 
@@ -534,5 +533,108 @@ mod tests {
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0].len(), 64);
         assert_eq!(parts[1], "rtk-rewrite.sh");
+    }
+
+    // --- settings.json-based hook presence tests ---
+
+    fn make_settings(hooks_json: &str) -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(&path, hooks_json).unwrap();
+        dir
+    }
+
+    fn native_settings() -> &'static str {
+        r#"{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "rtk hook claude" }]
+      }
+    ]
+  }
+}"#
+    }
+
+    fn legacy_settings() -> &'static str {
+        r#"{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "/home/user/.claude/hooks/rtk-rewrite.sh" }]
+      }
+    ]
+  }
+}"#
+    }
+
+    #[test]
+    fn test_verify_native_hook_in_settings() {
+        let dir = make_settings(native_settings());
+        let path = dir.path().join("settings.json");
+        let status = verify_hook_in_settings(&path).unwrap();
+        assert_eq!(status, IntegrityStatus::Verified);
+    }
+
+    #[test]
+    fn test_verify_legacy_hook_in_settings() {
+        let dir = make_settings(legacy_settings());
+        let path = dir.path().join("settings.json");
+        let status = verify_hook_in_settings(&path).unwrap();
+        assert_eq!(status, IntegrityStatus::NoBaseline);
+    }
+
+    #[test]
+    fn test_verify_not_installed_empty_settings() {
+        let dir = make_settings(r#"{}"#);
+        let path = dir.path().join("settings.json");
+        let status = verify_hook_in_settings(&path).unwrap();
+        assert_eq!(status, IntegrityStatus::NotInstalled);
+    }
+
+    #[test]
+    fn test_verify_not_installed_missing_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("settings.json");
+        // File does not exist
+        let status = verify_hook_in_settings(&path).unwrap();
+        assert_eq!(status, IntegrityStatus::NotInstalled);
+    }
+
+    #[test]
+    fn test_verify_not_installed_no_hooks_key() {
+        let dir = make_settings(r#"{ "permissions": {} }"#);
+        let path = dir.path().join("settings.json");
+        let status = verify_hook_in_settings(&path).unwrap();
+        assert_eq!(status, IntegrityStatus::NotInstalled);
+    }
+
+    #[test]
+    fn test_verify_not_installed_no_pre_tool_use() {
+        let dir = make_settings(r#"{ "hooks": {} }"#);
+        let path = dir.path().join("settings.json");
+        let status = verify_hook_in_settings(&path).unwrap();
+        assert_eq!(status, IntegrityStatus::NotInstalled);
+    }
+
+    #[test]
+    fn test_verify_not_installed_unrelated_command() {
+        let dir = make_settings(
+            r#"{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "/usr/local/bin/some-other-hook.sh" }]
+      }
+    ]
+  }
+}"#,
+        );
+        let path = dir.path().join("settings.json");
+        let status = verify_hook_in_settings(&path).unwrap();
+        assert_eq!(status, IntegrityStatus::NotInstalled);
     }
 }
