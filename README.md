@@ -300,7 +300,7 @@ RTK supports 10 AI coding tools. Each integration transparently rewrites shell c
 
 | Tool | Install | Method |
 |------|---------|--------|
-| **Claude Code** | `rtk init -g` | PreToolUse hook (bash) |
+| **Claude Code** | `rtk init -g` | PreToolUse hook (`rtk hook claude`) — no `jq` required |
 | **GitHub Copilot (VS Code)** | `rtk init -g --copilot` | PreToolUse hook (`rtk hook copilot`) — transparent rewrite |
 | **GitHub Copilot CLI** | `rtk init -g --copilot` | PreToolUse deny-with-suggestion (CLI limitation) |
 | **Cursor** | `rtk init -g --agent cursor` | preToolUse hook (hooks.json) |
@@ -320,6 +320,8 @@ rtk init -g --auto-patch    # Non-interactive (CI/CD)
 rtk init --show             # Verify installation
 rtk init -g --uninstall     # Remove
 ```
+
+Uses `rtk hook claude` — a native Rust binary that reads JSON from stdin and rewrites Bash tool commands. No external dependencies (`jq` not required). If you previously installed via `rtk-rewrite.sh`, re-running `rtk init -g` auto-migrates to the native hook.
 
 ### GitHub Copilot (VS Code + CLI)
 

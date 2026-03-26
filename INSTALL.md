@@ -93,11 +93,12 @@ rtk gain  # MUST show token savings, not "command not found"
 
 ```bash
 rtk init -g
-# → Installs hook to ~/.claude/hooks/rtk-rewrite.sh
+# → Registers "rtk hook claude" in settings.json (native Rust, no jq required)
 # → Creates ~/.claude/RTK.md (10 lines, meta commands only)
 # → Adds @RTK.md reference to ~/.claude/CLAUDE.md
 # → Prompts: "Patch settings.json? [y/N]"
 # → If yes: patches + creates backup (~/.claude/settings.json.bak)
+# → If rtk-rewrite.sh was previously installed: auto-migrates to native hook
 
 # Automated alternatives:
 rtk init -g --auto-patch    # Patch without prompting
@@ -113,7 +114,7 @@ rtk init --show  # Check hook is installed and executable
 Claude Code's hook registry. RTK adds a PreToolUse hook that rewrites commands transparently. Without this, Claude won't invoke the hook automatically.
 
 ```
-  Claude Code          settings.json        rtk-rewrite.sh        RTK binary
+  Claude Code          settings.json        rtk hook claude       RTK binary
        │                    │                     │                    │
        │  "git status"      │                     │                    │
        │ ──────────────────►│                     │                    │
@@ -247,7 +248,7 @@ rtk vitest run
 rtk init -g --uninstall
 
 # What gets removed:
-#   - Hook: ~/.claude/hooks/rtk-rewrite.sh
+#   - Hook: "rtk hook claude" entry from settings.json
 #   - Context: ~/.claude/RTK.md
 #   - Reference: @RTK.md line from ~/.claude/CLAUDE.md
 #   - Registration: RTK hook entry from settings.json

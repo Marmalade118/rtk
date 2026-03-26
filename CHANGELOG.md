@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Features
+
+* **hook:** add `rtk hook claude` native Rust subcommand — replaces `rtk-rewrite.sh`, no `jq` dependency required ([#862](https://github.com/rtk-ai/rtk/pull/862))
+* **init:** `rtk init -g` now installs `rtk hook claude` (native binary) instead of the shell script; auto-migrates existing `rtk-rewrite.sh` entries on re-run ([#862](https://github.com/rtk-ai/rtk/pull/862))
+
 ### Bug Fixes
 
+* **hook:** fix silent failure when `jq` is not installed — `rtk-rewrite.sh` would exit 0 without rewriting any commands ([#430](https://github.com/rtk-ai/rtk/issues/430), [#862](https://github.com/rtk-ai/rtk/pull/862))
 * **diff:** correct truncation overflow count in condense_unified_diff ([#833](https://github.com/rtk-ai/rtk/pull/833)) ([5399f83](https://github.com/rtk-ai/rtk/commit/5399f83))
 * **git:** replace vague truncation markers with exact counts in log and grep output ([#833](https://github.com/rtk-ai/rtk/pull/833)) ([185fb97](https://github.com/rtk-ai/rtk/commit/185fb97))
 
