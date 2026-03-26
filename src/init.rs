@@ -2474,24 +2474,33 @@ More content"#;
         assert_eq!(result, input);
     }
 
+    // rtk init -g now installs "rtk hook claude" (native Rust, no jq) rather than a shell script.
+    // The legacy rtk-rewrite.sh is kept in the repo for reference and verified here.
+
+    #[test]
+    fn test_claude_hook_cmd_constant() {
+        // The command registered in settings.json must match the CLI subcommand exactly
+        assert_eq!(CLAUDE_HOOK_CMD, "rtk hook claude");
+    }
+
     #[test]
     #[cfg(unix)]
-    fn test_default_mode_creates_hook_and_rtk_md() {
+    fn test_legacy_hook_script_has_proper_guards() {
+        // Verify the legacy shell script still has required guards (used by manual installs)
+        assert!(REWRITE_HOOK.contains("command -v rtk"));
+        assert!(REWRITE_HOOK.contains("command -v jq"));
+        // rtk-rewrite.sh can be executed directly if jq is available
         let temp = TempDir::new().unwrap();
         let hook_path = temp.path().join("rtk-rewrite.sh");
-        let rtk_md_path = temp.path().join("RTK.md");
-
         fs::write(&hook_path, REWRITE_HOOK).unwrap();
-        fs::write(&rtk_md_path, RTK_SLIM).unwrap();
-
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755)).unwrap();
-
         assert!(hook_path.exists());
-        assert!(rtk_md_path.exists());
-
         let metadata = fs::metadata(&hook_path).unwrap();
-        assert!(metadata.permissions().mode() & 0o111 != 0);
+        assert!(
+            metadata.permissions().mode() & 0o111 != 0,
+            "hook must be executable"
+        );
     }
 
     #[test]
@@ -2818,7 +2827,10 @@ More notes
         });
 
         let migrated = migrate_legacy_hook(&mut root, "rtk hook claude");
-        assert!(!migrated, "nothing to migrate when already using native command");
+        assert!(
+            !migrated,
+            "nothing to migrate when already using native command"
+        );
     }
 
     #[test]

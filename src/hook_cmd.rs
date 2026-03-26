@@ -141,6 +141,57 @@ fn handle_copilot_cli(cmd: &str) -> Result<()> {
 
 // ── Claude Code hook ──────────────────────────────────────────
 
+/// Core Claude Code hook logic: parse JSON input and return hook response JSON string.
+/// Returns `Some(json)` if the command was rewritten, `None` to pass through silently.
+/// Extracted for testability — `run_claude()` is the stdin/stdout wrapper.
+pub(crate) fn process_claude_hook(input: &str) -> Option<String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
+    }
+
+    let v: Value = match serde_json::from_str(input) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[rtk hook] Failed to parse JSON input: {e}");
+            return None;
+        }
+    };
+
+    // Only handle Bash tool
+    let tool_name = v.get("tool_name").and_then(|t| t.as_str()).unwrap_or("");
+    if tool_name != "Bash" {
+        return None;
+    }
+
+    let cmd = v
+        .pointer("/tool_input/command")
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+
+    if cmd.is_empty() {
+        return None;
+    }
+
+    let rewritten = get_rewritten(cmd)?;
+
+    // Preserve all tool_input fields (description, etc.), only update command
+    let mut updated_input = v.get("tool_input").cloned().unwrap_or_else(|| json!({}));
+    if let Some(obj) = updated_input.as_object_mut() {
+        obj.insert("command".to_string(), Value::String(rewritten));
+    }
+
+    Some(
+        json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "updatedInput": updated_input
+            }
+        })
+        .to_string(),
+    )
+}
+
 /// Run the Claude Code PreToolUse hook.
 /// Reads JSON from stdin, rewrites Bash tool commands to rtk equivalents.
 /// No external dependencies — unlike rtk-rewrite.sh which required jq.
@@ -150,52 +201,9 @@ pub fn run_claude() -> Result<()> {
         .read_to_string(&mut input)
         .context("Failed to read stdin")?;
 
-    let input = input.trim();
-    if input.is_empty() {
-        return Ok(());
+    if let Some(output) = process_claude_hook(&input) {
+        println!("{output}");
     }
-
-    let v: Value = match serde_json::from_str(input) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("[rtk hook] Failed to parse JSON input: {e}");
-            return Ok(());
-        }
-    };
-
-    // Only handle Bash tool
-    let tool_name = v.get("tool_name").and_then(|t| t.as_str()).unwrap_or("");
-    if tool_name != "Bash" {
-        return Ok(());
-    }
-
-    let cmd = v
-        .pointer("/tool_input/command")
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
-
-    if cmd.is_empty() {
-        return Ok(());
-    }
-
-    let rewritten = match get_rewritten(cmd) {
-        Some(r) => r,
-        None => return Ok(()),
-    };
-
-    // Preserve all tool_input fields (description, etc.), only update command
-    let mut updated_input = v.get("tool_input").cloned().unwrap_or_else(|| json!({}));
-    if let Some(obj) = updated_input.as_object_mut() {
-        obj.insert("command".to_string(), Value::String(rewritten));
-    }
-
-    let output = json!({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "updatedInput": updated_input
-        }
-    });
-    println!("{output}");
     Ok(())
 }
 
@@ -393,9 +401,9 @@ mod tests {
         );
     }
 
-    // --- Claude Code hook ---
+    // --- Claude Code hook (process_claude_hook) ---
 
-    fn claude_input(cmd: &str) -> String {
+    fn claude_json(cmd: &str) -> String {
         json!({
             "tool_name": "Bash",
             "tool_input": { "command": cmd, "description": "Run command" }
@@ -403,84 +411,95 @@ mod tests {
         .to_string()
     }
 
+    fn parse_hook_output(json_str: &str) -> Value {
+        serde_json::from_str(json_str).expect("hook output must be valid JSON")
+    }
+
     #[test]
     fn test_claude_rewrites_git_status() {
-        let input = claude_input("git status");
-        let v: Value = serde_json::from_str(&input).unwrap();
-        let cmd = v
-            .pointer("/tool_input/command")
-            .and_then(|c| c.as_str())
-            .unwrap();
-        let rewritten = get_rewritten(cmd).expect("should rewrite git status");
-        assert_eq!(rewritten, "rtk git status");
-    }
-
-    #[test]
-    fn test_claude_no_rewrite_for_unknown_command() {
-        let input = claude_input("htop");
-        let v: Value = serde_json::from_str(&input).unwrap();
-        let cmd = v
-            .pointer("/tool_input/command")
-            .and_then(|c| c.as_str())
-            .unwrap();
-        assert!(get_rewritten(cmd).is_none());
-    }
-
-    #[test]
-    fn test_claude_no_rewrite_for_already_rtk() {
-        let input = claude_input("rtk git status");
-        let v: Value = serde_json::from_str(&input).unwrap();
-        let cmd = v
-            .pointer("/tool_input/command")
-            .and_then(|c| c.as_str())
-            .unwrap();
-        assert!(get_rewritten(cmd).is_none());
-    }
-
-    #[test]
-    fn test_claude_preserves_tool_input_fields() {
-        // updated_input must preserve 'description' field alongside rewritten command
-        let v: Value = json!({
-            "tool_name": "Bash",
-            "tool_input": { "command": "git status", "description": "Check status" }
-        });
-        let cmd = v
-            .pointer("/tool_input/command")
-            .and_then(|c| c.as_str())
-            .unwrap();
-        let rewritten = get_rewritten(cmd).unwrap();
-
-        let mut updated_input = v.get("tool_input").cloned().unwrap();
-        updated_input
-            .as_object_mut()
-            .unwrap()
-            .insert("command".to_string(), Value::String(rewritten));
-
-        assert_eq!(updated_input["command"], "rtk git status");
-        assert_eq!(updated_input["description"], "Check status");
-    }
-
-    #[test]
-    fn test_claude_ignores_non_bash_tool() {
-        let v: Value = json!({ "tool_name": "Edit", "tool_input": { "command": "git status" } });
-        let tool_name = v.get("tool_name").and_then(|t| t.as_str()).unwrap_or("");
-        assert_ne!(tool_name, "Bash");
-    }
-
-    #[test]
-    fn test_claude_output_format() {
-        let rewritten = "rtk git status".to_string();
-        let updated_input = json!({ "command": rewritten, "description": "Run" });
-        let output = json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "updatedInput": updated_input
-            }
-        });
-        assert_eq!(output["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+        let output = process_claude_hook(&claude_json("git status")).expect("should rewrite");
+        let v = parse_hook_output(&output);
         assert_eq!(
-            output["hookSpecificOutput"]["updatedInput"]["command"],
+            v["hookSpecificOutput"]["updatedInput"]["command"],
             "rtk git status"
         );
+    }
+
+    #[test]
+    fn test_claude_rewrites_cargo_test() {
+        let output = process_claude_hook(&claude_json("cargo test --all")).expect("should rewrite");
+        let v = parse_hook_output(&output);
+        assert_eq!(
+            v["hookSpecificOutput"]["updatedInput"]["command"],
+            "rtk cargo test --all"
+        );
+    }
+
+    #[test]
+    fn test_claude_no_output_for_unknown_command() {
+        assert!(process_claude_hook(&claude_json("htop")).is_none());
+    }
+
+    #[test]
+    fn test_claude_no_output_for_already_rtk() {
+        assert!(process_claude_hook(&claude_json("rtk git status")).is_none());
+    }
+
+    #[test]
+    fn test_claude_no_output_for_non_bash_tool() {
+        let input =
+            json!({ "tool_name": "Edit", "tool_input": { "command": "git status" } }).to_string();
+        assert!(process_claude_hook(&input).is_none());
+    }
+
+    #[test]
+    fn test_claude_no_output_for_empty_input() {
+        assert!(process_claude_hook("").is_none());
+        assert!(process_claude_hook("   ").is_none());
+    }
+
+    #[test]
+    fn test_claude_no_output_for_invalid_json() {
+        assert!(process_claude_hook("not json at all").is_none());
+    }
+
+    #[test]
+    fn test_claude_preserves_description_field() {
+        let input = json!({
+            "tool_name": "Bash",
+            "tool_input": { "command": "git status", "description": "Check repo status" }
+        })
+        .to_string();
+        let output = process_claude_hook(&input).expect("should rewrite");
+        let v = parse_hook_output(&output);
+        assert_eq!(
+            v["hookSpecificOutput"]["updatedInput"]["command"],
+            "rtk git status"
+        );
+        assert_eq!(
+            v["hookSpecificOutput"]["updatedInput"]["description"],
+            "Check repo status"
+        );
+    }
+
+    #[test]
+    fn test_claude_output_schema() {
+        let output = process_claude_hook(&claude_json("git status")).expect("should rewrite");
+        let v = parse_hook_output(&output);
+        // Verify expected Claude Code PreToolUse hook response shape
+        assert_eq!(v["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+        assert!(v["hookSpecificOutput"]["updatedInput"].is_object());
+        // Must NOT include permissionDecision (Claude Code infers allow from updatedInput presence)
+        assert!(v["hookSpecificOutput"]["permissionDecision"].is_null());
+    }
+
+    #[test]
+    fn test_claude_heredoc_passthrough() {
+        let input = json!({
+            "tool_name": "Bash",
+            "tool_input": { "command": "cat <<'EOF'\nhello\nEOF" }
+        })
+        .to_string();
+        assert!(process_claude_hook(&input).is_none());
     }
 }
