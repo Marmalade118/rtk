@@ -63,6 +63,7 @@ fn hash_path(hook_path: &Path) -> PathBuf {
 /// against casual modification. Not a security boundary — an
 /// attacker with write access can chmod it — but forces a
 /// deliberate action rather than accidental overwrite.
+#[cfg(test)]
 pub fn store_hash(hook_path: &Path) -> Result<()> {
     let hash = compute_hash(hook_path)?;
     let hash_file = hash_path(hook_path);
